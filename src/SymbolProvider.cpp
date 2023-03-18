@@ -28,12 +28,13 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+
 #include <delayimp.h>
 
 #ifdef __cplusplus
-#define EXTERN_C_SymDBHelper extern "C"
+#define SYMBOLPROVIDER_EXTERN_C extern "C"
 #else
-#define EXTERN_C_SymDBHelper extern
+#define SYMBOLPROVIDER_EXTERN_C extern
 #endif
 
 extern "C" {
@@ -44,8 +45,7 @@ inline const PfnDliHook __pfnDliNotifyHook2  = nullptr;
 // LiteLoader Api to Fetch Function Address
 namespace ll::memory {
 using FuncPtr = void*;
-template <typename T>
-extern FuncPtr getPtr(T t);
+extern FuncPtr resolveSymbol(const char* symbol);
 } // namespace ll::memory
 
 static size_t __strlen(const char* sz) {
@@ -79,7 +79,7 @@ static unsigned IndexFromPImgThunkData(PCImgThunkData pitdCur, PCImgThunkData pi
     return (unsigned)(pitdCur - pitdBase);
 }
 
-EXTERN_C_SymDBHelper IMAGE_DOS_HEADER __ImageBase;
+SYMBOLPROVIDER_EXTERN_C IMAGE_DOS_HEADER __ImageBase;
 
 #define PtrFromRVA(RVA) (((PBYTE)&__ImageBase) + (RVA))
 
@@ -169,7 +169,8 @@ static __int64 findRva(PCImgDelayDescr pidd, unsigned int iIAT) {
         (PCImgThunkData)PtrFromRVA(pidd->rvaINT),
         (PCImgThunkData)PtrFromRVA(pidd->rvaBoundIAT),
         (PCImgThunkData)PtrFromRVA(pidd->rvaUnloadIAT),
-        pidd->dwTimeStamp};
+        pidd->dwTimeStamp,
+    };
 
     unsigned int   iINT;
     PCImgThunkData pitd;
@@ -182,7 +183,7 @@ static __int64 findRva(PCImgDelayDescr pidd, unsigned int iIAT) {
     pitd = &(idd.pINT[iINT]);
 
     if (!IMAGE_SNAP_BY_ORDINAL(pitd->u1.Ordinal))
-        return (__int64)ll::memory::getPtr((LPCSTR
+        return (__int64)ll::memory::resolveSymbol((LPCSTR
         )(((PIMAGE_IMPORT_BY_NAME)PtrFromRVA((RVA)((UINT_PTR)(pitd->u1.AddressOfData))))->Name));
     return 0;
 }
@@ -224,7 +225,7 @@ static DynamicInitializer dynamicInitializer;
 } // namespace Magic
 
 #include <stdio.h>
-EXTERN_C_SymDBHelper FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FARPROC* ppfnIATEntry) {
+SYMBOLPROVIDER_EXTERN_C FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FARPROC* ppfnIATEntry) {
 
     InternalImgDelayDescr idd = {
         pidd->grAttrs,
@@ -273,7 +274,7 @@ EXTERN_C_SymDBHelper FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FAR
     //"bedrock_server.dll"
     // printf_s("DelayLoad Called for [iiat=%d] %s %d\n", iIAT, dli.dlp.szProcName, dli.dlp.dwOrdinal);
     if (Magic::pImgDelayDescr_BDS == (__int64)pidd || strcmp(dli.szDll, BDSAPI_FAKEDLL_NAME) == 0) {
-        pfnRet = (FARPROC)ll::memory::getPtr(dli.dlp.szProcName);
+        pfnRet = (FARPROC)ll::memory::resolveSymbol(dli.dlp.szProcName);
         goto SetEntryHookBypass;
     }
 
@@ -396,4 +397,4 @@ HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR szDll) {
     return hrRet;
 }
 
-#undef EXTERN_C_SymDBHelper
+#undef SYMBOLPROVIDER_EXTERN_C
