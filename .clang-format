@@ -18,6 +18,9 @@ AlignConsecutiveMacros:
   AcrossComments: false
 AllowAllParametersOfDeclarationOnNextLine: false
 AllowShortLambdasOnASingleLine: All
+AllowShortBlocksOnASingleLine: Always
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
 AlwaysBreakAfterDefinitionReturnType: None
 AlwaysBreakTemplateDeclarations: 'Yes'
 BinPackArguments: false

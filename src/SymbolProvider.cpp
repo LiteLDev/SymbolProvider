@@ -20,9 +20,8 @@
 
 #pragma warning(disable : 4267)
 
-#ifndef BDSAPI_FAKEDLL_NAME
-#define BDSAPI_FAKEDLL_NAME "bedrock_server.dll"
-#endif // !BDSAPI_FAKEDLL_NAME
+#include <cstdint>
+#include <cstdio>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -31,16 +30,9 @@
 
 #include <delayimp.h>
 
-#ifdef __cplusplus
-#define SYMBOLPROVIDER_EXTERN_C extern "C"
-#else
-#define SYMBOLPROVIDER_EXTERN_C extern
-#endif
+constexpr auto BDSAPI_FAKEDLL_NAME = "bedrock_server.dll";
 
-extern "C" {
-inline const PfnDliHook __pfnDliFailureHook2 = nullptr;
-inline const PfnDliHook __pfnDliNotifyHook2  = nullptr;
-}
+inline PCImgDelayDescr pImgDelayDescr_BDS = nullptr;
 
 // LiteLoader Api to Fetch Function Address
 namespace ll::memory {
@@ -48,16 +40,16 @@ using FuncPtr = void*;
 extern FuncPtr resolveSymbol(const char* symbol);
 } // namespace ll::memory
 
+using namespace ll::memory;
+
 static size_t __strlen(const char* sz) {
     const char* szEnd = sz;
-    while (*szEnd++ != 0)
-        ;
+    while (*szEnd++ != 0) { ; }
     return szEnd - sz - 1;
 }
 
 static int __memcmp(const void* pv1, const void* pv2, size_t cb) {
-    if (!cb)
-        return 0;
+    if (!cb) return 0;
     while (--cb && *(char*)pv1 == *(char*)pv2) {
         pv1 = ((char*)pv1) + 1;
         pv2 = ((char*)pv2) + 1;
@@ -79,9 +71,12 @@ static unsigned IndexFromPImgThunkData(PCImgThunkData pitdCur, PCImgThunkData pi
     return (unsigned)(pitdCur - pitdBase);
 }
 
-SYMBOLPROVIDER_EXTERN_C IMAGE_DOS_HEADER __ImageBase;
+ExternC IMAGE_DOS_HEADER __ImageBase;
 
-#define PtrFromRVA(RVA) (((PBYTE)&__ImageBase) + (RVA))
+template <class X>
+constexpr X PFromRva(RVA rva) {
+    return X(PBYTE(&__ImageBase) + rva);
+}
 
 typedef struct UnloadInfo* PUnloadInfo;
 typedef struct UnloadInfo {
@@ -99,24 +94,21 @@ static unsigned CountOfImports(PCImgThunkData pitdBase) {
     return cRet;
 }
 
-PUnloadInfo __puiHead = 0;
+PUnloadInfo __puiHead = nullptr;
 
 static UnloadInfo* add_ULI(PCImgDelayDescr pidd_) {
-    UnloadInfo* ret = (UnloadInfo*)LocalAlloc(LPTR, sizeof(UnloadInfo));
-    ret->pidd       = pidd_;
-    ret->puiNext    = __puiHead;
-    __puiHead       = ret;
+    auto* ret    = (UnloadInfo*)LocalAlloc(LPTR, sizeof(UnloadInfo));
+    ret->pidd    = pidd_;
+    ret->puiNext = __puiHead;
+    __puiHead    = ret;
     return ret;
 }
 
 static void del_ULI(UnloadInfo* p) {
     if (p) {
         PUnloadInfo* ppui = &__puiHead;
-        while (*ppui && *ppui != p) {
-            ppui = &((*ppui)->puiNext);
-        }
-        if (*ppui == p)
-            *ppui = p->puiNext;
+        while (*ppui && *ppui != p) { ppui = &((*ppui)->puiNext); }
+        if (*ppui == p) *ppui = p->puiNext;
         LocalFree((void*)p);
     }
 }
@@ -149,96 +141,26 @@ static int WINAPI FLoadedAtPreferredAddress(PIMAGE_NT_HEADERS pinh, HMODULE hmod
     return ((UINT_PTR)(hmod)) == pinh->OptionalHeader.ImageBase;
 }
 
-#if (defined(_X86_) && !defined(__x86_64))
-#undef InterlockedExchangePointer
-#define InterlockedExchangePointer(Target, Value)                                                                      \
-    (PVOID)(LONG_PTR) InterlockedExchange((PLONG)(Target), (LONG)(LONG_PTR)(Value))
-/*typedef unsigned long *PULONG_PTR;*/
-#endif
-
-namespace Magic {
-static __int64 pImgDelayDescr_BDS = 0;
-
-static __int64 findRva(PCImgDelayDescr pidd, unsigned int iIAT) {
+ExternC FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FARPROC* ppfnIATEntry) {
 
     InternalImgDelayDescr idd = {
         pidd->grAttrs,
-        (LPCSTR)PtrFromRVA(pidd->rvaDLLName),
-        (HMODULE*)PtrFromRVA(pidd->rvaHmod),
-        (PImgThunkData)PtrFromRVA(pidd->rvaIAT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaINT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaBoundIAT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaUnloadIAT),
-        pidd->dwTimeStamp,
-    };
-
-    unsigned int   iINT;
-    PCImgThunkData pitd;
-
-    if (!(idd.grAttrs & dlattrRva)) {
-        return 0;
-    }
-
-    iINT = iIAT;
-    pitd = &(idd.pINT[iINT]);
-
-    if (!IMAGE_SNAP_BY_ORDINAL(pitd->u1.Ordinal))
-        return (__int64)ll::memory::resolveSymbol((LPCSTR
-        )(((PIMAGE_IMPORT_BY_NAME)PtrFromRVA((RVA)((UINT_PTR)(pitd->u1.AddressOfData))))->Name));
-    return 0;
-}
-static void initDlsymLinkCache(LPCSTR szDll) {
-    PIMAGE_NT_HEADERS pinh = PinhFromImageBase((HMODULE)(&__ImageBase));
-    if (pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size) {
-        PCImgDelayDescr pidd;
-        // find target dll as PCImgDelayDescr
-        pidd = (PCImgDelayDescr
-        )PtrFromRVA(pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress);
-        while (pidd->rvaDLLName) {
-            LPCSTR szDllCur  = (LPCSTR)PtrFromRVA(pidd->rvaDLLName);
-            size_t cchDllCur = __strlen(szDllCur);
-            if (cchDllCur == __strlen(szDll) && __memcmp(szDll, szDllCur, cchDllCur) == 0)
-                break;
-            pidd++;
-        }
-        if (pidd->rvaDLLName) {
-            FARPROC* ppfnIATEntry    = (FARPROC*)PtrFromRVA(pidd->rvaIAT);
-            size_t   iIAT            = 0;
-            size_t   cpfnIATEntries  = CountOfImports((PCImgThunkData)(ppfnIATEntry));
-            FARPROC* ppfnIATEntryMax = ppfnIATEntry + cpfnIATEntries;
-            for (; ppfnIATEntry < ppfnIATEntryMax;) {
-                // iat binding
-                *ppfnIATEntry = (FARPROC)findRva(pidd, iIAT);
-                ppfnIATEntry++;
-                iIAT++;
-            }
-        } else {
-            RaiseException(VcppException(ERROR_SEVERITY_ERROR, ERROR_MOD_NOT_FOUND), 0, 1, (PULONG_PTR)(szDll));
-        }
-    }
-    return;
-}
-struct DynamicInitializer {
-    DynamicInitializer() { initDlsymLinkCache(BDSAPI_FAKEDLL_NAME); }
-};
-static DynamicInitializer dynamicInitializer;
-} // namespace Magic
-
-#include <stdio.h>
-SYMBOLPROVIDER_EXTERN_C FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FARPROC* ppfnIATEntry) {
-
-    InternalImgDelayDescr idd = {
-        pidd->grAttrs,
-        (LPCSTR)PtrFromRVA(pidd->rvaDLLName),
-        (HMODULE*)PtrFromRVA(pidd->rvaHmod),
-        (PImgThunkData)PtrFromRVA(pidd->rvaIAT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaINT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaBoundIAT),
-        (PCImgThunkData)PtrFromRVA(pidd->rvaUnloadIAT),
+        PFromRva<LPCSTR>(pidd->rvaDLLName),
+        PFromRva<HMODULE*>(pidd->rvaHmod),
+        PFromRva<PImgThunkData>(pidd->rvaIAT),
+        PFromRva<PCImgThunkData>(pidd->rvaINT),
+        PFromRva<PCImgThunkData>(pidd->rvaBoundIAT),
+        PFromRva<PCImgThunkData>(pidd->rvaUnloadIAT),
         pidd->dwTimeStamp};
     DelayLoadInfo dli = {
-        sizeof(DelayLoadInfo), pidd, ppfnIATEntry, idd.szName, {0, {NULL}},
-            0, 0, 0
+        sizeof(DelayLoadInfo),
+        pidd,
+        ppfnIATEntry,
+        idd.szName,
+        {0, {nullptr}},
+        nullptr,
+        nullptr,
+        0,
     };
     HMODULE        hmod;
     unsigned       iIAT, iINT;
@@ -248,7 +170,7 @@ SYMBOLPROVIDER_EXTERN_C FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, 
     if (!(idd.grAttrs & dlattrRva)) {
         PDelayLoadInfo rgpdli[1] = {&dli};
         RaiseException(VcppException(ERROR_SEVERITY_ERROR, ERROR_INVALID_PARAMETER), 0, 1, (PULONG_PTR)(rgpdli));
-        return 0;
+        return nullptr;
     }
     hmod = *idd.phmod;
 
@@ -262,71 +184,53 @@ SYMBOLPROVIDER_EXTERN_C FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, 
     dli.dlp.fImportByName = !IMAGE_SNAP_BY_ORDINAL(pitd->u1.Ordinal);
     if (dli.dlp.fImportByName)
         dli.dlp.szProcName =
-            (LPCSTR)(((PIMAGE_IMPORT_BY_NAME)PtrFromRVA((RVA)((UINT_PTR)(pitd->u1.AddressOfData))))->Name);
-    else
-        dli.dlp.dwOrdinal = (DWORD)(IMAGE_ORDINAL(pitd->u1.Ordinal));
-    pfnRet = NULL;
+            (LPCSTR)((PFromRva<PIMAGE_IMPORT_BY_NAME>((RVA)((UINT_PTR)(pitd->u1.AddressOfData))))->Name);
+    else dli.dlp.dwOrdinal = (DWORD)(IMAGE_ORDINAL(pitd->u1.Ordinal));
+    pfnRet = nullptr;
     if (__pfnDliNotifyHook2) {
         pfnRet = ((*__pfnDliNotifyHook2)(dliStartProcessing, &dli));
-        if (pfnRet != NULL)
-            goto HookBypass;
+        if (pfnRet != nullptr) goto HookBypass;
     }
-    //"bedrock_server.dll"
-    // printf_s("DelayLoad Called for [iiat=%d] %s %d\n", iIAT, dli.dlp.szProcName, dli.dlp.dwOrdinal);
-    if (Magic::pImgDelayDescr_BDS == (__int64)pidd || strcmp(dli.szDll, BDSAPI_FAKEDLL_NAME) == 0) {
-        pfnRet = (FARPROC)ll::memory::resolveSymbol(dli.dlp.szProcName);
+    if (!pImgDelayDescr_BDS && !strcmp(dli.szDll, BDSAPI_FAKEDLL_NAME)) { pImgDelayDescr_BDS = pidd; }
+
+    if (pImgDelayDescr_BDS == pidd) {
+        pfnRet = (FARPROC)resolveSymbol(dli.dlp.szProcName);
         goto SetEntryHookBypass;
     }
 
-    if (hmod == 0) {
-        if (__pfnDliNotifyHook2)
-            hmod = (HMODULE)(((*__pfnDliNotifyHook2)(dliNotePreLoadLibrary, &dli)));
-        if (hmod == 0)
-#ifdef __clang__
-            hmod = LoadLibraryA(dli.szDll);
-#elif __GNUC__
-            hmod = LoadLibrary(dli.szDll);
-#elif _MSC_VER
-            hmod = LoadLibraryA(dli.szDll);
-#endif
-
-
-        if (hmod == 0) {
+    if (hmod == nullptr) {
+        if (__pfnDliNotifyHook2) hmod = (HMODULE)(((*__pfnDliNotifyHook2)(dliNotePreLoadLibrary, &dli)));
+        if (hmod == nullptr) hmod = LoadLibraryA(dli.szDll);
+        if (hmod == nullptr) {
             dli.dwLastError = GetLastError();
-            if (__pfnDliFailureHook2)
-                hmod = (HMODULE)((*__pfnDliFailureHook2)(dliFailLoadLib, &dli));
-            if (hmod == 0) {
+            if (__pfnDliFailureHook2) hmod = (HMODULE)((*__pfnDliFailureHook2)(dliFailLoadLib, &dli));
+            if (hmod == nullptr) {
                 PDelayLoadInfo rgpdli[1] = {&dli};
                 RaiseException(VcppException(ERROR_SEVERITY_ERROR, ERROR_MOD_NOT_FOUND), 0, 1, (PULONG_PTR)(rgpdli));
                 return dli.pfnCur;
             }
         }
-        HMODULE hmodT = (HMODULE)(InterlockedExchangePointer((PVOID*)idd.phmod, (PVOID)(hmod)));
+        auto hmodT = (HMODULE)(InterlockedExchangePointer((PVOID*)idd.phmod, (PVOID)(hmod)));
         if (hmodT != hmod) {
-            if (pidd->rvaUnloadIAT)
-                add_ULI(pidd);
-        } else
-            FreeLibrary(hmod);
+            if (pidd->rvaUnloadIAT) add_ULI(pidd);
+        } else FreeLibrary(hmod);
     }
     dli.hmodCur = hmod;
-    if (__pfnDliNotifyHook2)
-        pfnRet = (*__pfnDliNotifyHook2)(dliNotePreGetProcAddress, &dli);
-    if (pfnRet == 0) {
+    if (__pfnDliNotifyHook2) pfnRet = (*__pfnDliNotifyHook2)(dliNotePreGetProcAddress, &dli);
+    if (pfnRet == nullptr) {
         if (pidd->rvaBoundIAT && pidd->dwTimeStamp) {
-            PIMAGE_NT_HEADERS pinh = (PIMAGE_NT_HEADERS)(PinhFromImageBase(hmod));
+            auto pinh = (PIMAGE_NT_HEADERS)(PinhFromImageBase(hmod));
             if (pinh->Signature == IMAGE_NT_SIGNATURE && TimeStampOfImage(pinh) == idd.dwTimeStamp &&
                 FLoadedAtPreferredAddress(pinh, hmod)) {
                 pfnRet = (FARPROC)((UINT_PTR)(idd.pBoundIAT[iIAT].u1.Function));
-                if (pfnRet != 0)
-                    goto SetEntryHookBypass;
+                if (pfnRet != nullptr) goto SetEntryHookBypass;
             }
         }
         pfnRet = GetProcAddress(hmod, dli.dlp.szProcName);
     }
     if (!pfnRet) {
         dli.dwLastError = GetLastError();
-        if (__pfnDliFailureHook2)
-            pfnRet = (*__pfnDliFailureHook2)(dliFailGetProc, &dli);
+        if (__pfnDliFailureHook2) pfnRet = (*__pfnDliFailureHook2)(dliFailGetProc, &dli);
         if (!pfnRet) {
             PDelayLoadInfo rgpdli[1] = {&dli};
             RaiseException(VcppException(ERROR_SEVERITY_ERROR, ERROR_PROC_NOT_FOUND), 0, 1, (PULONG_PTR)(rgpdli));
@@ -351,18 +255,17 @@ BOOL WINAPI __FUnloadDelayLoadedDLL2(LPCSTR szDll) {
     PUnloadInfo pui  = __puiHead;
 
     for (pui = __puiHead; pui; pui = pui->puiNext) {
-        LPCSTR szName = (LPCSTR)PtrFromRVA(pui->pidd->rvaDLLName);
+        auto   szName = PFromRva<LPCSTR>(pui->pidd->rvaDLLName);
         size_t cbName = __strlen(szName);
-        if (cbName == __strlen(szDll) && __memcmp(szDll, szName, cbName) == 0)
-            break;
+        if (cbName == __strlen(szDll) && __memcmp(szDll, szName, cbName) == 0) break;
     }
     if (pui && pui->pidd->rvaUnloadIAT) {
         PCImgDelayDescr pidd  = pui->pidd;
-        HMODULE*        phmod = (HMODULE*)PtrFromRVA(pidd->rvaHmod);
+        auto            phmod = PFromRva<HMODULE*>(pidd->rvaHmod);
         HMODULE         hmod  = *phmod;
-        OverlayIAT((PImgThunkData)PtrFromRVA(pidd->rvaIAT), (PCImgThunkData)PtrFromRVA(pidd->rvaUnloadIAT));
+        OverlayIAT(PFromRva<PImgThunkData>(pidd->rvaIAT), PFromRva<PCImgThunkData>(pidd->rvaUnloadIAT));
         FreeLibrary(hmod);
-        *phmod = NULL;
+        *phmod = nullptr;
         del_ULI((UnloadInfo*)pui);
         fRet = TRUE;
     }
@@ -370,31 +273,38 @@ BOOL WINAPI __FUnloadDelayLoadedDLL2(LPCSTR szDll) {
 }
 
 HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR szDll) {
-
     HRESULT           hrRet = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
     PIMAGE_NT_HEADERS pinh  = PinhFromImageBase((HMODULE)(&__ImageBase));
     if (pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size) {
-        PCImgDelayDescr pidd;
-        pidd = (PCImgDelayDescr
-        )PtrFromRVA(pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress);
+        auto pidd = PFromRva<PCImgDelayDescr>(
+            pinh->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress
+        );
         while (pidd->rvaDLLName) {
-            LPCSTR szDllCur  = (LPCSTR)PtrFromRVA(pidd->rvaDLLName);
+            auto   szDllCur  = PFromRva<LPCSTR>(pidd->rvaDLLName);
             size_t cchDllCur = __strlen(szDllCur);
-            if (cchDllCur == __strlen(szDll) && __memcmp(szDll, szDllCur, cchDllCur) == 0)
-                break;
+            if (cchDllCur == __strlen(szDll) && __memcmp(szDll, szDllCur, cchDllCur) == 0) break;
             pidd++;
         }
         if (pidd->rvaDLLName) {
-            FARPROC* ppfnIATEntry    = (FARPROC*)PtrFromRVA(pidd->rvaIAT);
+            auto     ppfnIATEntry    = PFromRva<FARPROC*>(pidd->rvaIAT);
             size_t   cpfnIATEntries  = CountOfImports((PCImgThunkData)(ppfnIATEntry));
             FARPROC* ppfnIATEntryMax = ppfnIATEntry + cpfnIATEntries;
-            for (; ppfnIATEntry < ppfnIATEntryMax; ppfnIATEntry++) {
-                __delayLoadHelper2(pidd, ppfnIATEntry);
-            }
+            for (; ppfnIATEntry < ppfnIATEntryMax; ppfnIATEntry++) { __delayLoadHelper2(pidd, ppfnIATEntry); }
             hrRet = S_OK;
         }
     }
     return hrRet;
 }
 
-#undef SYMBOLPROVIDER_EXTERN_C
+struct DynamicInitializer {
+    DynamicInitializer() { __HrLoadAllImportsForDll(BDSAPI_FAKEDLL_NAME); }
+};
+
+#pragma warning(disable : 4073)
+#pragma init_seg(lib)
+
+ExternC const PfnDliHook __pfnDliNotifyHook2 = nullptr; // NOLINT(misc-misplaced-const)
+
+ExternC const PfnDliHook __pfnDliFailureHook2 = nullptr; // NOLINT(misc-misplaced-const)
+
+inline DynamicInitializer dynamicInitializer;
