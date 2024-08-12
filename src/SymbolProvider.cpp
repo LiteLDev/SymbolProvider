@@ -30,7 +30,7 @@
 
 #include <delayimp.h>
 
-constexpr auto BDSAPI_FAKEDLL_NAME = "bedrock_server.dll";
+constexpr auto BDSAPI_FAKEDLL_NAME = "bedrock_runtime.dll";
 
 inline PCImgDelayDescr pImgDelayDescr_BDS = nullptr;
 
@@ -151,7 +151,8 @@ ExternC FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd, FARPROC* ppfnIAT
         PFromRva<PCImgThunkData>(pidd->rvaINT),
         PFromRva<PCImgThunkData>(pidd->rvaBoundIAT),
         PFromRva<PCImgThunkData>(pidd->rvaUnloadIAT),
-        pidd->dwTimeStamp};
+        pidd->dwTimeStamp
+    };
     DelayLoadInfo dli = {
         sizeof(DelayLoadInfo),
         pidd,
