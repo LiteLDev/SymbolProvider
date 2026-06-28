@@ -297,10 +297,6 @@ HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR szDll) {
     return hrRet;
 }
 
-struct DynamicInitializer {
-    DynamicInitializer() { __HrLoadAllImportsForDll(BDSAPI_FAKEDLL_NAME); }
-};
-
 #pragma warning(disable : 4073)
 #pragma init_seg(lib)
 
@@ -308,4 +304,12 @@ ExternC const PfnDliHook __pfnDliNotifyHook2 = nullptr; // NOLINT(misc-misplaced
 
 ExternC const PfnDliHook __pfnDliFailureHook2 = nullptr; // NOLINT(misc-misplaced-const)
 
-inline DynamicInitializer dynamicInitializer;
+static void __cdecl PreloadBdsApi() {
+    (void)__HrLoadAllImportsForDll(BDSAPI_FAKEDLL_NAME);
+}
+
+using InitFn = void (__cdecl*)(void);
+
+#pragma section(".CRT$XCT", read)
+extern "C" __declspec(allocate(".CRT$XCT"))
+InitFn bdsapi_preload_initializer = &PreloadBdsApi;
